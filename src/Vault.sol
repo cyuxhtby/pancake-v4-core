@@ -4,26 +4,30 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IVault, IVaultToken} from "./interfaces/IVault.sol";
-import {PoolId, PoolIdLibrary} from "./types/PoolId.sol";
-import {PoolKey} from "./types/PoolKey.sol";
-import {SettlementGuard} from "./libraries/SettlementGuard.sol";
+import {PoolId, PoolIdLibrary} from "./types/PoolId.sol"; // The poolId is the hashed pool key
+import {PoolKey} from "./types/PoolKey.sol"; // Holds config and identification data for the pool 
+import {SettlementGuard} from "./libraries/SettlementGuard.sol"; // This manages the locks for flash accounting
 import {Currency, CurrencyLibrary} from "./types/Currency.sol";
-import {BalanceDelta} from "./types/BalanceDelta.sol";
-import {ILockCallback} from "./interfaces/ILockCallback.sol";
+// Distinction:
+// BalanceDelta: Represents the net change in balances for two currencies (amount0 and amount1) at the app level.
+// Currency Delta: Represents changes for a specific currency for a settler in the vault.
+import {BalanceDelta} from "./types/BalanceDelta.sol"; // Represents net balance changes for pool operations, tracking changes for two currencies for amount0 and amount1 as single signed int256
+import {ILockCallback} from "./interfaces/ILockCallback.sol"; // Assuming its a callback for once flash accouting settles ? TODO: look into callback
+// Is this distinction at the app level or at the pool level? 
 import {SafeCast} from "./libraries/SafeCast.sol";
 import {VaultReserves} from "./libraries/VaultReserves.sol";
 import {VaultToken} from "./VaultToken.sol";
 
 contract Vault is IVault, VaultToken, Ownable {
     using SafeCast for *;
-    using PoolIdLibrary for PoolKey;
-    using CurrencyLibrary for Currency;
-    using VaultReserves for Currency;
+    using PoolIdLibrary for PoolKey; // Gets poolId for given key 
+    using CurrencyLibrary for Currency; // holding and transfering native and tokens lib
+    using VaultReserves for Currency; // get and set vault reserves lib 
 
-    mapping(address => bool) public override isAppRegistered;
+    mapping(address => bool) public override isAppRegistered; // Registered pool managers (AMM designs)
 
     /// @dev keep track of each app's reserves
-    mapping(address => mapping(Currency currency => uint256 reserve)) public reservesOfApp;
+    mapping(address => mapping(Currency currency => uint256 reserve)) public reservesOfApp; // The reserves of a given AMM design? 
 
     /// @notice only registered app is allowed to perform accounting
     modifier onlyRegisteredApp() {
@@ -39,6 +43,7 @@ contract Vault is IVault, VaultToken, Ownable {
     }
 
     /// @inheritdoc IVault
+    // Permissioned AMM design registration
     function registerApp(address app) external override onlyOwner {
         isAppRegistered[app] = true;
 
@@ -62,6 +67,7 @@ contract Vault is IVault, VaultToken, Ownable {
 
     /// @dev interaction must start from lock
     /// @inheritdoc IVault
+    // TODO: Further look into this locking mechanism
     function lock(bytes calldata data) external override returns (bytes memory result) {
         /// @dev only one locker at a time
         SettlementGuard.setLocker(msg.sender);
@@ -75,12 +81,14 @@ contract Vault is IVault, VaultToken, Ownable {
     }
 
     /// @inheritdoc IVault
+    // Called by a pool manager to store intermediate deltas between settlments
     function accountAppBalanceDelta(PoolKey memory key, BalanceDelta delta, address settler)
         external
         override
         isLocked
         onlyRegisteredApp
     {
+        // extract amount changes for both currencies
         int128 delta0 = delta.amount0();
         int128 delta1 = delta.amount1();
 
@@ -94,6 +102,8 @@ contract Vault is IVault, VaultToken, Ownable {
     }
 
     /// @inheritdoc IVault
+    // Most delta update calls seem to be pool specific
+    // I have yet to find a call that is currency specific 
     function accountAppBalanceDelta(Currency currency, int128 delta, address settler)
         external
         override
@@ -105,6 +115,7 @@ contract Vault is IVault, VaultToken, Ownable {
     }
 
     /// @inheritdoc IVault
+    // Transfers assets out of vault
     function take(Currency currency, address to, uint256 amount) external override isLocked {
         unchecked {
             SettlementGuard.accountDelta(msg.sender, currency, -(amount.toInt128()));
@@ -113,6 +124,7 @@ contract Vault is IVault, VaultToken, Ownable {
     }
 
     /// @inheritdoc IVault
+    // Mints LP token
     function mint(address to, Currency currency, uint256 amount) external override isLocked {
         unchecked {
             SettlementGuard.accountDelta(msg.sender, currency, -(amount.toInt128()));
@@ -120,6 +132,8 @@ contract Vault is IVault, VaultToken, Ownable {
         }
     }
 
+
+    // So anybody can synce the reserves of vault at any point ? 
     function sync(Currency currency) public returns (uint256 balance) {
         balance = currency.balanceOfSelf();
         currency.setVaultReserves(balance);
@@ -140,12 +154,14 @@ contract Vault is IVault, VaultToken, Ownable {
     }
 
     /// @inheritdoc IVault
+    // Burn LP token
     function burn(address from, Currency currency, uint256 amount) external override isLocked {
         SettlementGuard.accountDelta(msg.sender, currency, amount.toInt128());
         _burnFrom(from, currency, amount);
     }
 
     /// @inheritdoc IVault
+    // Seems to rely on the app or pool manager to ensure proper checks are in place
     function collectFee(Currency currency, uint256 amount, address recipient) external onlyRegisteredApp {
         reservesOfApp[msg.sender][currency] -= amount;
         currency.transfer(recipient, amount);
