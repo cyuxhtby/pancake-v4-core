@@ -26,11 +26,14 @@ import {BeforeSwapDelta} from "../types/BeforeSwapDelta.sol";
 contract CLPoolManager is ICLPoolManager, ProtocolFees, Extsload {
     using SafeCast for int256;
     using PoolIdLibrary for PoolKey;
-    using Hooks for bytes32;
-    using LPFeeLibrary for uint24;
+    // Hook byte structure: 
+    // [0 - 15[: Hooks registration bitmap (16 bits) - indicates which hooks are active
+    // [16 - 255[: Pool-specific parameters (240 bits) - stores other settings like fees
+    using Hooks for bytes32; // This encoding allows the system to quickly check and enforce hook configurations using bitwise operations
+    using LPFeeLibrary for uint24; // Interesting as well
     using CLPoolParametersHelper for bytes32;
-    using CLPool for *;
-    using CLPosition for mapping(bytes32 => CLPosition.Info);
+    using CLPool for *; // Provides methods directly callable on instances of CLPool.State
+    using CLPosition for mapping(bytes32 => CLPosition.Info); // For effecient management of CLPositions
     using CLPoolGetters for CLPool.State;
 
     /// @inheritdoc ICLPoolManager
@@ -39,11 +42,11 @@ contract CLPoolManager is ICLPoolManager, ProtocolFees, Extsload {
     /// @inheritdoc ICLPoolManager
     int24 public constant override MIN_TICK_SPACING = 1;
 
-    mapping(PoolId id => CLPool.State) public pools;
+    mapping(PoolId id => CLPool.State) public pools; 
 
-    mapping(PoolId id => PoolKey) public poolIdToPoolKey;
+    mapping(PoolId id => PoolKey) public poolIdToPoolKey; 
 
-    constructor(IVault _vault, uint256 controllerGasLimit) ProtocolFees(_vault, controllerGasLimit) {}
+    constructor(IVault _vault, uint256 controllerGasLimit) ProtocolFees(_vault, controllerGasLimit) {} 
 
     /// @notice pool manager specified in the pool key must match current contract
     modifier poolManagerMatch(address poolManager) {
@@ -52,6 +55,11 @@ contract CLPoolManager is ICLPoolManager, ProtocolFees, Extsload {
     }
 
     /// @inheritdoc ICLPoolManager
+    // A single slot for:
+    // the current price
+    // the current tick
+    // protocol fee, expressed in hundredths of a bip
+    // the lp fee, either static at initialize or dynamic via hook
     function getSlot0(PoolId id)
         external
         view
@@ -78,6 +86,7 @@ contract CLPoolManager is ICLPoolManager, ProtocolFees, Extsload {
     }
 
     /// @inheritdoc ICLPoolManager
+    // Salt differentiates between multiple positions that a single owner might have within the same tick range
     function getPosition(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
         external
         view
@@ -88,6 +97,7 @@ contract CLPoolManager is ICLPoolManager, ProtocolFees, Extsload {
     }
 
     /// @inheritdoc ICLPoolManager
+    // Initializes a virtual pool 
     function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes calldata hookData)
         external
         override
@@ -124,12 +134,13 @@ contract CLPoolManager is ICLPoolManager, ProtocolFees, Extsload {
     }
 
     /// @inheritdoc ICLPoolManager
+    // Called directly by users or through hooks
     function modifyLiquidity(
         PoolKey memory key,
         ICLPoolManager.ModifyLiquidityParams memory params,
         bytes calldata hookData
     ) external override returns (BalanceDelta delta, BalanceDelta feeDelta) {
-        // Do not allow add liquidity when paused()
+        // Inherited from the PausableRole
         if (paused() && params.liquidityDelta > 0) revert PoolPaused();
 
         PoolId id = key.toId();
